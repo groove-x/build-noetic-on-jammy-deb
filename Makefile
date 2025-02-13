@@ -8,30 +8,27 @@ run: desktop
 # 	$(VENV)/python gen_build_env.py --all --ignore gazebo
 
 ros_base: venv gen_build_env.py
-	$(VENV)/python gen_build_env.py --targets ros_base
+	$(VENV)/python gen_build_env.py --ubuntu_distribution noble --targets ros_base
 
 desktop: venv gen_build_env.py
-	$(VENV)/python gen_build_env.py --targets desktop
+	$(VENV)/python gen_build_env.py --ubuntu_distribution noble --targets desktop
 
-desktop_full: venv gen_build_env.py
-	$(VENV)/python gen_build_env.py --targets desktop_full
-
-# arm64 ubuntu does not have packages of gazebo and libgazebo-dev.
-desktop_full_arm64: venv gen_build_env.py
-	$(VENV)/python gen_build_env.py --targets desktop perception stage_ros
+# Ubuntu noble does not have packages of gazebo and libgazebo-dev.
+desktop_full_wo_sim: venv gen_build_env.py
+	$(VENV)/python gen_build_env.py --ubuntu_distribution noble --targets desktop perception stage_ros
 
 docker/build_ros_package.sh: build_ros_package.sh
 	rm -f $@
 	cp $< $@
 
 docker/.image: docker/Dockerfile docker/build_ros_package.sh docker/Makefile
-	# docker build --platform linux/x86_64 -t noetic-on-jammy docker
-	docker build -t noetic-on-jammy docker
+	# docker build --platform linux/x86_64 -t noetic-on-noble docker
+	docker build -t noetic-on-noble docker
 	touch docker/.image
 
 login: docker/.image
-	# docker run --platform linux/x86_64 -it --rm  noetic-on-jammy bash
-	docker run -it --rm  noetic-on-jammy bash
+	# docker run --platform linux/x86_64 -it --rm  noetic-on-noble bash
+	docker run -it --rm  noetic-on-noble bash
 
 .PHONY: clean clean-cache clean-all
 clean:

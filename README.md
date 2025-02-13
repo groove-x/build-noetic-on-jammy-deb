@@ -1,6 +1,6 @@
 # build-noetic-on-jammy-deb
 
-Ubuntu 22.04 (Jammy Jellyfish) 用の [ROS 1 Noetic Ninjemys](http://wiki.ros.org/noetic) の binary debian package を生成するためのツール
+A tool to generate binary debian packages of [ROS 1 Noetic Ninjemys](http://wiki.ros.org/noetic) on Ubuntu 24.04 (Noble Numbat)
 
 ## 基本的な動作
 
@@ -9,7 +9,7 @@ Ubuntu 22.04 (Jammy Jellyfish) 用の [ROS 1 Noetic Ninjemys](http://wiki.ros.or
 - Target に関連する依存パッケージのビルド
 - Target のパッケージのビルド
 
-## Jammy対応のために修正した点など
+## Modifications for Noble Compatibility
 
 - catkin
   - オプションを変更してsetup.bash等が生成されるようにしている
@@ -17,33 +17,22 @@ Ubuntu 22.04 (Jammy Jellyfish) 用の [ROS 1 Noetic Ninjemys](http://wiki.ros.or
   - c++11 等の指定になっている部分を c++17 に変更している
   - shared_mutex, shared_lock を使用するため
     - なぜかfocalではc++11指定でも使えたようである
-- hddtempの依存削除
-  - diagnostic_common_diagnostics で run_depend に指定されているが jammy の標準では無いので、依存を削除してビルドしている
-- arm64 は ros-desktop のビルドが可能
-  - gazebo 系のパッケージが無いので ros-desktop-full がビルドできない
-- amd64 は ros-desktop-full のビルドが可能
+- ros-noetic-simulation can't be built on Ubuntu 24.04 because of lack of gazebo packages
+- Some repositories from ros-o project are used instead of the official ones
+  - They provide some fixes for the packages, for example, for the python3.12 compatibility
+  - Thanks to the ros-o project
 
-## ビルド手順
+## Build Instructions
 
 ```bash
-# ビルド環境の生成 arm64 では desktop_full はビルドできない
-make desktop # or desktop_full or ros_base
-# ビルド環境と構築とログイン
+# Generate build environment (Dockerfile, Makefile, rosdep.yaml, etc.)
+make desktop
+# Build the generated Docker image and login to the container
 make login
 
-# ログイン後
-# すべてビルド
+# After logging in
+# Build all the packages
 make
-
-# debパッケージは /tmp/deb 以下にできます
-
-# 以下は一部をビルドするための手順
-# ビルド用ツールの作成
-make python_tools
-
-# 特定のパッケージと、それに必要なパッケージ
-# 例: std_msgs
-make std_msgs
 ```
 
 ## ファイルの取り出し手順
@@ -52,12 +41,12 @@ make std_msgs
 
 ```bash
 # /tmp に deb ファイルが生成されるので、それを取り出す
-docker ps -f "ancestor=noetic-on-jammy" -q
+docker ps -f "ancestor=noetic-on-noble" -q
 # container id を確認
 docker cp <container id>:/tmp/deb <target dir>
 
 # one liner
-docker cp "$(docker ps -f "ancestor=noetic-on-jammy" -q):/tmp/deb" deb
+docker cp "$(docker ps -f "ancestor=noetic-on-noble" -q):/tmp/deb" deb
 ```
 
 ## 参考

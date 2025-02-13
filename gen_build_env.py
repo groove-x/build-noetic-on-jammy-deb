@@ -1,17 +1,23 @@
-from urllib.parse import urlparse
-from pathlib import Path
-import requests
-import yaml
-import coloredlogs, logging
-from xml.etree import ElementTree
+import logging
 from argparse import ArgumentParser
+from dataclasses import dataclass, field
+from pathlib import Path
 from pprint import pformat
 from typing import List, Set
+from urllib.parse import urlparse
+from xml.etree import ElementTree
+
+import coloredlogs
+import requests
+import yaml
 from packaging import version
-from dataclasses import dataclass, field
 
 coloredlogs.install(level="INFO")
 logger = logging.getLogger(__name__)
+
+ROS_VERSION = 1
+ROS_PYTHON_VERSION = 3
+
 
 @dataclass
 class MakefileTarget:
@@ -85,6 +91,28 @@ class BuildPackage:
         return targets
 
 
+ALT_REPOSITORIES = {
+    "stdeb": GitRepository("stdeb", "https://github.com/astraw/stdeb.git", branch="master"),
+    "vcstool": GitRepository("vcstool", "https://github.com/dirk-thomas/vcstool.git", branch="master"),
+    "vcstools": GitRepository("vcstools", "https://github.com/vcstools/vcstools.git", branch="master"),
+    "wstool": GitRepository("wstool", "https://github.com/vcstools/wstool.git", branch="master"),
+    "rosconsole": GitRepository("rosconsole", "https://github.com/ros-o/rosconsole.git", branch="obese-devel"),
+    "catkin": GitRepository("catkin", "https://github.com/ros-o/catkin.git", branch="obese-devel"),
+    "python_qt_binding": GitRepository("python_qt_binding", "https://github.com/ros-o/python_qt_binding.git", branch="obese-devel"),
+    "ros_comm": GitRepository("ros_comm", "https://github.com/ros-o/ros_comm.git", branch="obese-devel"),
+    "roscpp_core": GitRepository("roscpp_core", "https://github.com/ros-o/roscpp_core.git", branch="obese-devel"),
+    "actionlib": GitRepository("actionlib", "https://github.com/ros-o/actionlib.git", branch="obese-devel"),
+    "ros_control": GitRepository("ros_control", "https://github.com/ros-o/ros_control.git", branch="obese-devel"),
+    "geometry": GitRepository("geometry", "https://github.com/ros-o/geometry.git", branch="obese-devel"),
+    "geometry2": GitRepository("geometry2", "https://github.com/ros-o/geometry2.git", branch="obese-devel"),
+    "gencpp": GitRepository("gencpp", "https://github.com/ros-o/gencpp.git", branch="obese-devel"),
+    "rosconsole": GitRepository("rosconsole", "https://github.com/ros-o/rosconsole.git", branch="obese-devel"),
+    "qt_gui_core": GitRepository("qt_gui_core", "https://github.com/ros-o/qt_gui_core.git", branch="obese-devel"),
+    "perception_pcl": GitRepository("perception_pcl", "https://github.com/ros-o/perception_pcl.git", branch="obese-devel"),
+    "diagnostics": GitRepository("diagnostics", "https://github.com/ros-o/diagnostics", branch="obese-devel"),
+}
+
+
 class BuildFarm(object):
     rosdistro_base_url = "https://raw.githubusercontent.com/ros/rosdistro/master"
     index_path = Path("index-v4.yaml")
@@ -93,7 +121,7 @@ class BuildFarm(object):
     cache_dir = Path("cache")
     cache_dir.mkdir(exist_ok=True, parents=True)
 
-    def __init__(self, ros_distribution="noetic", ubuntu_distribution="jammy"):
+    def __init__(self, ros_distribution, ubuntu_distribution):
         self.logger = logging.getLogger(self.__class__.__name__)
         self.ros_distribution = ros_distribution
         self.ubuntu_distribution = ubuntu_distribution
@@ -241,26 +269,34 @@ class BuildFarm(object):
             if "attrib" in d:
                 # check attributes
                 for k, v in d["attrib"].items():
-                    if k == "condition":
-                        if v.split(" ")[-1] != "3":
-                            depends.remove(dep_name)
-                            continue
                     if k == "version_gte":
                         package_version = self.get_package_version(dep_name)
                         if package_version is None:
                             continue
                         if version.parse(v) >= version.parse(package_version):
-                            self.logger.warning(f"{dep_name} required version_gte {v} by {package_name} but {package_version}")
-                            self.logger.debug(d)
+                            if not dep_name.startswith("python"):
+                                self.logger.warning(f"{dep_name} required version_gte {v} by {package_name} but {package_version}")
+                            # self.logger.warning(d)
                     elif k == "version_gt":
                         package_version = self.get_package_version(dep_name)
                         if package_version is None:
                             continue
                         if version.parse(v) > version.parse(package_version):
-                            self.logger.warning(f"{dep_name} required version_gte {v} by {package_name} but {package_version}")
-                            self.logger.debug(d)
+                            if not dep_name.startswith("python"):
+                                self.logger.warning(f"{dep_name} required version_gt {v} by {package_name} but {package_version}")
+                            # self.logger.warning(d)
                     elif k == "condition":
-                        pass
+                        condition = v
+                        condition = condition.replace("$ROS_PYTHON_VERSION", str(ROS_PYTHON_VERSION))
+                        condition = condition.replace("$ROS_VERSION", str(ROS_VERSION))
+                        try:
+                            condition = eval(condition)
+                            self.logger.debug(f"{v} -> {condition}")
+                            if not condition:
+                                self.logger.debug(f"remove {dep_name} by condition {v}")
+                                depends.remove(dep_name)
+                        except SyntaxError:
+                            raise ValueError(f"unknown condition {v} in depends {dep_name}")
                     else:
                         self.logger.warning(f"unknown attribute {k}: {v} in depends {dep_name}")
                         self.logger.debug(d)
@@ -315,7 +351,7 @@ class BuildFarm(object):
     def gen_makefile(self, makefile: Path, main_targets: set, build_dep: Set[str]):
         build_dir = Path(f"/root/{self.ros_distribution}_build/src")
 
-        makefile_targets = []
+        makefile_targets: List[MakefileTarget] = []
 
         # main target
         makefile_targets += [
@@ -326,6 +362,21 @@ class BuildFarm(object):
                 commands=[
                     f"@echo built packages : `ls -1 /tmp/deb/* | wc -l` / {len(build_dep) + 8}"],
                 phony=True)
+        ]
+
+        # patch dh_python3 to always execute with --no-guessing-deps option
+        # to prevent unwanted dependencies to be added to packages
+        # see https://github.com/ros-infrastructure/bloom/issues/671
+        makefile_targets += [
+            "# patch dh_python3",
+            MakefileTarget(
+                target="/usr/bin/dh_python3_",
+                commands=[
+                    f"mv -vn /usr/bin/dh_python3 /usr/bin/dh_python3_",
+                    f"echo '#!/bin/bash\\n/usr/bin/dh_python3_ --no-guessing-deps \"$$@\"' > /usr/bin/dh_python3",
+                    "chmod +x /usr/bin/dh_python3",
+                ]
+            )
         ]
 
         # build env
@@ -366,7 +417,8 @@ class BuildFarm(object):
                     "rosdep update"]),
         ]
 
-        python_build_packages = [
+        python_build_packages: List[BuildPackage] = []
+        python_build_packages.append(
             BuildPackage(
                 target=MakefileTarget(
                     target="/usr/local/bin/ros_release_python",
@@ -374,22 +426,29 @@ class BuildFarm(object):
                 repo=GitRepository(
                     name="ros_release_python",
                     url="https://github.com/ros-infrastructure/ros_release_python.git",
-                    base_dir=build_dir))]
+                    base_dir=build_dir)))
+        # NOTE: dependencies are to build all packages, not actual dependencies
         python_packages = {
-            "catkin_pkg": [],
+            "stdeb": [],
+            "vcstools": ["stdeb"],
+            "vcstool": ["stdeb"],
+            "wstool": ["stdeb", "vcstools"],
+            "catkin_pkg": ["vcstools", "vcstool", "wstool"],
             "rospkg": ["catkin_pkg"],
             "rosdistro": ["rospkg"],
             "rosdep": ["rosdistro"],
-            # "bloom": [],
+            "bloom": ["rosdep", "/usr/bin/dh_python3_"],
         }
         for pkg, dep in python_packages.items():
             target = MakefileTarget(
                 target=f"/tmp/built_packages/{pkg.replace('_', '-')}",
-                depends=["/usr/local/bin/ros_release_python"] + env_dep + [f"/tmp/built_packages/{d.replace('_', '-')}" for d in dep],
+                depends=["/usr/local/bin/ros_release_python"] + env_dep + \
+                    [f"/tmp/built_packages/{d.replace('_', '-')}" if d in python_packages else d for d in dep],
                 commands=[f"cd `dirname $<` && ros_release_python deb3 && apt-get install -y ./deb_dist/*.deb && mv ./deb_dist/*.deb /tmp/deb && touch $@"])
             repo = GitRepository(
                 name=pkg,
-                url=f"https://github.com/ros-infrastructure/{pkg}.git",
+                url=ALT_REPOSITORIES[pkg].url if pkg in ALT_REPOSITORIES \
+                    else f"https://github.com/ros-infrastructure/{pkg}.git",
                 base_dir=build_dir)
             python_build_packages.append(BuildPackage(
                 target=target, repo=repo))
@@ -399,18 +458,20 @@ class BuildFarm(object):
         # packages to build
         makefile_targets.append("# ROS packages to build")
         build_targets = []
+        alt_used_repos = []
         for target in build_dep:
             dependencies = self.get_package_dependencies(target, recursive=False) & build_dep
             repo_name, repo = self.get_repository(target)
             url = repo["source"]["url"]
             branch = repo["source"]["version"]
 
-            # Compatibility fix for liblog4cxx v0.11-0.13
-            # https://github.com/ros/rosconsole/pull/58
-            # TODO: remove this when PR is merged
-            if repo_name == "rosconsole":
-                url = "https://github.com/twdragon/rosconsole.git"
-                branch = "log4cxx-0.12"
+            # Use alternative repository if exists (e.g. if ros-o has it)
+            if repo_name in ALT_REPOSITORIES:
+                url = ALT_REPOSITORIES[repo_name].url
+                branch = ALT_REPOSITORIES[repo_name].branch
+                if repo_name not in alt_used_repos:
+                    alt_used_repos.append(repo_name)
+                    self.logger.info(f"Use alternative repository for {repo_name}: {url}")
 
             repository = GitRepository(
                 name=repo_name,
@@ -420,7 +481,7 @@ class BuildFarm(object):
 
             target = MakefileTarget(
                 target=f"/tmp/built_packages/{target}",
-                depends=[f"/tmp/built_packages/{d}" for d in list(dependencies)] + ["/root/.ros/rosdep/sources.cache"],
+                depends=[f"/tmp/built_packages/{d}" for d in list(dependencies)] + ["/root/.ros/rosdep/sources.cache"] + ["/tmp/built_packages/bloom"],
                 commands=[f"bash build_ros_package.sh {repository.repo_dir} {target} && touch $@"],
                 alias=target)
             build_targets.append(BuildPackage(
@@ -460,7 +521,6 @@ class BuildFarm(object):
             "python3-stdeb",
             "python3-dateutil",
             "python3-docutils",
-            "python3-vcstools",
             "python3-packaging",
             "python3-pip",
         }
@@ -475,6 +535,7 @@ class BuildFarm(object):
             "python3-rosdistro-modules",
             "python3-rosdep",
             "python3-rosdep-modules",
+            "python3-vcstools",
         }
         install_apt_packages = list(required_packages_for_build | apt_pkgs - ignore_pkgs)
         install_apt_packages.sort()
@@ -486,9 +547,6 @@ class BuildFarm(object):
             f.write("RUN apt-get update && apt-get upgrade -y && apt-get install -y \\\n  ")
             f.write(" \\\n  ".join(install_apt_packages) + "\n\n")
 
-            # bloom がうまくビルドできなかったのでとりあえずpipで最新を入れる
-            f.write("RUN pip3 install -U pip && pip3 install bloom\n")
-
             f.write("\n")
 
             f.write("COPY rosdep.yaml /root\n")
@@ -499,9 +557,11 @@ class BuildFarm(object):
             f.write("WORKDIR /root\n")
 
 def parse_args():
-    parser = ArgumentParser(description="Build debian package tool for Noetic on Jammy")
+    parser = ArgumentParser(description="Build debian package tool for Noetic on Noble")
     parser.add_argument("--debug", action="store_true", help="enable debug message")
     parser.add_argument("--targets", nargs="*", default="desktop", help="target packages to build")
+    parser.add_argument("--ubuntu_distribution", default="noble")
+    parser.add_argument("--ros_distribution", default="noetic")
     return parser.parse_args()
 
 if __name__ == "__main__":
@@ -510,7 +570,7 @@ if __name__ == "__main__":
     if args.debug:
         coloredlogs.install(level="DEBUG")
 
-    bf = BuildFarm()
+    bf = BuildFarm(args.ros_distribution, args.ubuntu_distribution)
 
     # 依存関係を抽出
     all_depend_packages = set()
